@@ -1,302 +1,237 @@
-// Network topology
-//
-//       n0 ----------- n1
-//            1 Mbps
-//             10 ms
-//
-// - Flow from n0 to n1 using BulkSendApplication.
+/*
+Network Topology ->  n0 -------- n1
+Given,  link bandwidth -> 1Mbps
+        link delay -> 10ms
+*/
 
 #include <iostream>
 #include <fstream>
 #include <string>
-
 #include <ns3/core-module.h>
 #include <ns3/network-module.h>
-#include <ns3/internet-module.h>
+#include <ns3/tcp-header.h>
+#include <ns3/ipv4-global-routing-helper.h>
 #include <ns3/flow-monitor-helper.h>
 #include <ns3/point-to-point-module.h>
-#include <ns3/applications-module.h>
+#include <ns3/calendar-scheduler.h>
 #include <ns3/flow-monitor-module.h>
 #include <ns3/error-model.h>
-#include <ns3/tcp-header.h>
 #include <ns3/udp-header.h>
 #include <ns3/enum.h>
 #include <ns3/event-id.h>
-#include <ns3/ipv4-global-routing-helper.h>
 #include <ns3/scheduler.h>
-#include <ns3/calendar-scheduler.h>
+#include <ns3/internet-module.h>
 #include <ns3/gnuplot.h>
-
+#include <ns3/applications-module.h>
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE ("TcpComparision");
+NS_LOG_COMPONENT_DEFINE ("TcpComparison");
 
 AsciiTraceHelper ascii;
 
 class MyApp:public Application{
 public:
-  MyApp();
-  virtual ~MyApp();
-  void Setup(Ptr<Socket> socket, Address address, uint32_t pktSize, uint32_t numPkt, DataRate dataRate);
-  virtual void StartApplication();
-  virtual void StopApplication();
-  void ScheduleTx();
-  void SendPacket();
-
   Ptr<Socket> app_socket;
   Address app_peer;
-  uint32_t app_pktSize;
-  uint32_t app_numPkt;
   DataRate app_dataRate;
   EventId app_sendEvent;
-  bool app_running;
+  uint32_t app_pktSize;
+  uint32_t app_numPkt;
   uint32_t app_packetsSent;
+  bool app_running;
+
+  MyApp(){
+    app_socket = 0;
+    app_dataRate = 0;
+    app_pktSize = 0;
+    app_numPkt = 0;
+    app_packetsSent = 0;
+    app_running = false;
+  }
+  void Setup(Ptr<Socket> socket, Address address, uint32_t pktSize, uint32_t numPkt, DataRate dataRate){
+    app_socket = socket;
+    app_peer = address;
+    app_pktSize = pktSize;
+    app_numPkt = numPkt;
+    app_dataRate = dataRate;
+  }
+  virtual void StartApplication(){
+    app_running = true;
+    app_packetsSent = 0;
+    app_socket->Bind();
+    app_socket->Connect(app_peer);
+    SendPacket();
+  }
+  void SendPacket(){
+    Ptr<Packet> packet = Create<Packet> (app_pktSize);
+    app_packetsSent++;
+    app_socket->Send(packet);
+    if(app_packetsSent < app_numPkt){
+      ScheduleTx();
+    }
+  }
+  void ScheduleTx(){
+    if(app_running){
+      Time tNext (Seconds (app_pktSize * 8 / static_cast<double> (app_dataRate.GetBitRate ())));
+      app_sendEvent = Simulator::Schedule (tNext, &MyApp::SendPacket, this);
+    }
+  }
+  virtual void StopApplication(){
+    app_running = false;
+    if(app_sendEvent.IsRunning()){
+      Simulator::Cancel(app_sendEvent);
+    }
+    if(app_socket){
+      app_socket->Close();
+    }
+  }
+  ~MyApp(){
+    app_socket = 0;
+  }
 };
 
-MyApp::MyApp()
-  : app_socket(0),
-    app_peer(),
-    app_pktSize(0),
-    app_numPkt(0),
-    app_dataRate(0),
-    app_sendEvent(),
-    app_running(false),
-    app_packetsSent(0)
-{}
-
-MyApp::~MyApp(){
-  app_socket = 0;
-}
-
-void MyApp::Setup(Ptr<Socket> socket, Address address, uint32_t pktSize, uint32_t numPkt, DataRate dataRate){
-  app_socket = socket;
-  app_peer = address;
-  app_pktSize = pktSize;
-  app_numPkt = numPkt;
-  app_dataRate = dataRate;
-}
-
-void MyApp::StartApplication(){
-  app_running = true;
-  app_packetsSent = 0;
-  app_socket->Bind();
-  app_socket->Connect(app_peer);
-  SendPacket();
-}
-
-void MyApp::StopApplication(){
-  app_running = false;
-  if(app_sendEvent.IsRunning()){
-    Simulator::Cancel(app_sendEvent);
+void ThroughputMonitor(Ptr<OutputStreamWrapper> stream, FlowMonitorHelper *fmhelper, Ptr<FlowMonitor> flowMon){
+  static double time = 0;
+  double throughput=0;
+  std::map<FlowId, FlowMonitor::FlowStats> flowStats = flowMon->GetFlowStats();
+  Ptr<Ipv4FlowClassifier> classing = DynamicCast<Ipv4FlowClassifier> (fmhelper->GetClassifier());
+  for (std::map<FlowId, FlowMonitor::FlowStats>::const_iterator statistics = flowStats.begin (); statistics != flowStats.end (); ++statistics)
+  {
+    throughput += statistics->second.rxBytes;
   }
-  if(app_socket){
-    app_socket->Close();
-  }
+  *stream->GetStream() << time << "\t" << ((double)throughput/1000) << '\n';
+  time += 0.05;
+  Simulator::Schedule(Seconds(0.05),&ThroughputMonitor, stream , fmhelper, flowMon);
 }
 
-void MyApp::SendPacket(){
-  Ptr<Packet> packet = Create<Packet> (app_pktSize);
-  app_socket->Send(packet);
-  if(++app_packetsSent < app_numPkt){
-    ScheduleTx();
-  }
-}
-
-void MyApp::ScheduleTx(){
-  if(app_running){
-    Time tNext (Seconds (app_pktSize * 8 / static_cast<double> (app_dataRate.GetBitRate ())));
-    app_sendEvent = Simulator::Schedule (tNext, &MyApp::SendPacket, this);
-   }
-}
-
-/*--------------------class definitions over----------------------*/
-
-//to keep track of changes in congestion window, using callbacks  from TCP when window is changed
-static void CwndChange(Ptr<OutputStreamWrapper> stream, uint32_t oldCwnd, uint32_t newCwnd){
+void CwndChange(Ptr<OutputStreamWrapper> stream, uint32_t oldCwnd, uint32_t newCwnd){
   *stream->GetStream()<<Simulator::Now().GetSeconds()<<"\t"<<((double)newCwnd/1000)<<"\n";
 }
 
-static void RxDrop(Ptr<OutputStreamWrapper> stream, Ptr<const Packet> p){
+void RxDrop(Ptr<OutputStreamWrapper> stream, Ptr<const Packet> p){
   static int i=1;
   *stream->GetStream()<<Simulator::Now().GetSeconds()<<"\t"<<i<<"\n";
   i++;
 }
 
-void ThroughputMonitor(Ptr<OutputStreamWrapper> stream, FlowMonitorHelper *fmhelper, Ptr<FlowMonitor> flowMon){
-  static double time = 0;
-  double localThrou=0;
-  std::map<FlowId, FlowMonitor::FlowStats> flowStats = flowMon->GetFlowStats();
-  Ptr<Ipv4FlowClassifier> classing = DynamicCast<Ipv4FlowClassifier> (fmhelper->GetClassifier());
-  for (std::map<FlowId, FlowMonitor::FlowStats>::const_iterator stats = flowStats.begin (); stats != flowStats.end (); ++stats)
-  {
-    localThrou += stats->second.rxBytes;
-  }
-  *stream->GetStream() << time << "\t" << ((double)localThrou/1000) << '\n';
-  time += 0.05;
-  Simulator::Schedule(Seconds(0.05),&ThroughputMonitor, stream , fmhelper, flowMon);
-}
-/*------------------------ Helper functions defined --------------------*/
-int
-main (int argc, char *argv[])
-{
-    std::string tcp_variant;
+int main (){
+    std::cout<<"Enter [1-5] to select tcp_congestion_control_algo:\n";
+    std::cout<<"1.TCP New Reno\n";
+    std::cout<<"2.TCP Hybla\n";
+    std::cout<<"3.TCP Westwood\n";
+    std::cout<<"4.TCP Scalable\n";
+    std::cout<<"5.TCP Vegas\n";
+    std::string tcp_congestion_control_algo;
     int option;
-    std::cout<<"Enter [1-5] for TCP variant:\n1.TCP New Reno\n2.TCP Hybla\n3.TCP Westwood\n4.TCP Scalable\n5.TCP Vegas\n";
     std::cin>>option;
-    switch(option)
-    {
-      case 1:
-      tcp_variant = "TcpNewReno";
+    if(option == 1){
+      tcp_congestion_control_algo = "TcpNewReno";
       Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpNewReno::GetTypeId()));
-      break;
-
-      case 2:
-      tcp_variant ="TcpHybla";
+    }
+    else if(option == 2){
+      tcp_congestion_control_algo ="TcpHybla";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpHybla::GetTypeId()));
-      break;
-
-      case 3:
-      tcp_variant ="TcpWestwood";
+    }
+    else if(option == 3){
+      tcp_congestion_control_algo ="TcpWestwood";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpWestwood::GetTypeId ()));
       Config::SetDefault ("ns3::TcpWestwood::FilterType", EnumValue (TcpWestwood::TUSTIN));
-      break;
-
-      case 4:
-      tcp_variant ="TcpScalable";
-      Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpScalable::GetTypeId()));
-      break;
-
-      case 5:
-      tcp_variant ="TcpVegas";
-      Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpVegas::GetTypeId ()));
-      break;
-
-      default:
-      fprintf (stderr, "Invalid TCP version\n");
-      exit (1);
     }
-  
-  std::string a_s = "bytes_"+tcp_variant+".dat";
-  std::string b_s = "dropped_"+tcp_variant+".dat";
-  std::string c_s = "cwnd_"+tcp_variant+".dat";
-
-  // Create file streams for data storage
-  Ptr<OutputStreamWrapper> total_bytes_data = ascii.CreateFileStream (a_s);
-  Ptr<OutputStreamWrapper> dropped_packets_data = ascii.CreateFileStream (b_s);
-  Ptr<OutputStreamWrapper> cwnd_data = ascii.CreateFileStream (c_s);
+    else if(option == 4){
+      tcp_congestion_control_algo ="TcpScalable";
+      Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpScalable::GetTypeId()));
+    }
+    else if(option == 5){
+      tcp_congestion_control_algo ="TcpVegas";
+      Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpVegas::GetTypeId ()));
+    }
+    else{
+      std::cout<<"Invalid input\nExiting.....";
+      exit (0);
+    }
+    std::cout<<"Selected algo: "<<tcp_congestion_control_algo<<"\n\n";
+    std::string congestion_window = "cwnd_"+tcp_congestion_control_algo+".txt";
+    std::string bytes_transferred = "bytes_"+tcp_congestion_control_algo+".txt";
+    std::string packets_dropped = "dropped_"+tcp_congestion_control_algo+".txt";
+ 
+    // Create file streams for data storage
+    Ptr<OutputStreamWrapper> cwnd_data = ascii.CreateFileStream (congestion_window);
+    Ptr<OutputStreamWrapper> total_bytes_data = ascii.CreateFileStream (bytes_transferred);
+    Ptr<OutputStreamWrapper> dropped_packets_data = ascii.CreateFileStream (packets_dropped);
     
-  // creating nodes
-  NodeContainer nodes;
-  nodes.Create (2);
-  NS_LOG_INFO ("Created 2 nodes.");
+    /* Declarations */
+    NodeContainer nodes; // creating nodes
+    NetDeviceContainer devices;
+    InternetStackHelper internet;
+    Ptr<MyApp> tcp_ftp_agent = CreateObject<MyApp> (); // creating TCP application at n0
+    uint16_t tcp_sink_port = 1234; 
+    Ptr<FlowMonitor> flowMonitor;
+    FlowMonitorHelper flowHelper;
+    PointToPointHelper p2p;
 
-  //NodeContainer n0n1 = NodeContainer(nodes.Get(0), nodes.Get(1));
+    nodes.Create (2);
+    std::cout<<"Nodes Created.\n";    // NS_LOG_INFO ("Created 2 nodes.");
 
-  PointToPointHelper pointToPoint;
-  pointToPoint.SetQueue ("ns3::DropTailQueue");
-  pointToPoint.SetDeviceAttribute ("DataRate", StringValue ("1Mbps"));
-  pointToPoint.SetChannelAttribute ("Delay", StringValue ("10ms"));
+    p2p.SetQueue ("ns3::DropTailQueue", "MaxSize", StringValue("1500B"));
+    p2p.SetDeviceAttribute ("DataRate", StringValue ("1Mbps"));
+    p2p.SetChannelAttribute ("Delay", StringValue ("10ms"));
+    devices = p2p.Install (nodes);
+    internet.Install (nodes);
+    
+    Ipv4AddressHelper ipv4_address; // creating ipv4 address object
+    ipv4_address.SetBase ("10.1.1.0", "255.255.255.252"); //setting ipv4 base
+    Ipv4InterfaceContainer interfaces = ipv4_address.Assign (devices); // installed devices get the 2 nodes of the topology
 
-  NS_LOG_INFO ("P2P link created....");
-  NS_LOG_INFO ("Bandwidth : 1Mbps");
-  NS_LOG_INFO ("Delay : 10ms");
-  NS_LOG_INFO ("Queue Type : DropTailQueue");
+    Ipv4GlobalRoutingHelper::PopulateRoutingTables (); // populating routing tables.
 
-  NetDeviceContainer devices;
-  devices = pointToPoint.Install (nodes);
-  NS_LOG_INFO ("Installing net device to nodes, adding MAC Address and Queue.");
+    std::cout<<"Creating Applications...\n";
+    Ptr<Socket> ns3TcpSocket1 = Socket::CreateSocket (nodes.Get (0), TcpSocketFactory::GetTypeId ()); // source at n0
 
-  // Install the internet stack on the nodes
-  InternetStackHelper internet;
-  internet.Install (nodes);
+    Address sinkAddress (InetSocketAddress (interfaces.GetAddress (1), tcp_sink_port));
+    PacketSinkHelper packetSinkHelper ("ns3::TcpSocketFactory", InetSocketAddress (interfaces.GetAddress (1), tcp_sink_port));
+    ApplicationContainer tcp_sink_app_first = packetSinkHelper.Install (nodes.Get (1));
+    tcp_sink_app_first.Start (Seconds (0.0));
+    tcp_sink_app_first.Stop (Seconds (1.8));
+    tcp_ftp_agent->Setup (ns3TcpSocket1, sinkAddress, 1040, 1000, DataRate ("300kbps"));
+    tcp_ftp_agent->SetStartTime (Seconds (0.0));
+    tcp_ftp_agent->SetStopTime (Seconds (1.8));
+    nodes.Get (0)->AddApplication (tcp_ftp_agent);
+    
+    //Create udp applications
+    uint16_t cbrPort = 1235;
+    double start_time[5] = {0.2, 0.4, 0.6, 0.8, 1.0};
+    double end_time[5]   = {1.8, 1.8, 1.2, 1.4, 1.6};
+    for(int i=0;i<5;i++){
+      uint16_t cbr_sink_port = cbrPort+i;
+      Address cbr_sink_address (InetSocketAddress (interfaces.GetAddress (1), cbr_sink_port));
+      PacketSinkHelper packetSinkHelper2 ("ns3::UdpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), cbr_sink_port));
+      ApplicationContainer cbr_sink_app = packetSinkHelper2.Install (nodes.Get (1)); //n1 as sink
+      cbr_sink_app.Start (Seconds (0.0));
+      cbr_sink_app.Stop (Seconds (1.8));
 
-  // Create error model
-  Ptr<RateErrorModel> error_model = CreateObject<RateErrorModel> ();
-  error_model->SetAttribute ("ErrorRate", DoubleValue (0.0001));
-  devices.Get (1)->SetAttribute ("ReceiveErrorModel", PointerValue (error_model));
-  
-  // We've got the "hardware" in place.  Now we need to add IP addresses.
-  Ipv4AddressHelper ipv4_address;
-  ipv4_address.SetBase ("10.1.1.0", "255.255.255.252");
-  Ipv4InterfaceContainer interfaces = ipv4_address.Assign (devices);
-  NS_LOG_INFO ("Assigned IP base addresses to the nodes");
+      // Create UDP application  at n[i]
+      Ptr<MyApp> cbr_agent = CreateObject<MyApp> ();
+      Ptr<Socket> ns3UdpSocket = Socket::CreateSocket (nodes.Get (0), UdpSocketFactory::GetTypeId ()); //source at n[i]
+      cbr_agent->Setup (ns3UdpSocket, cbr_sink_address, 1040, 100000, DataRate ("300Kbps"));
+      cbr_agent->SetStartTime (Seconds (start_time[i]));
+      cbr_agent->SetStopTime (Seconds (end_time[i])); 
+      nodes.Get(0)->AddApplication (cbr_agent); 
+    }
+    std::cout<<"Applications created.\n";
+    // Trace CongestionWindow
+    ns3TcpSocket1->TraceConnectWithoutContext ("CongestionWindow", MakeBoundCallback (&CwndChange,cwnd_data));
+    
+    Ptr<RateErrorModel> error_model = CreateObject<RateErrorModel> ();// Creating error model
+    error_model->SetAttribute ("ErrorRate", DoubleValue (0.0001));
+    devices.Get (1)->SetAttribute ("ReceiveErrorModel", PointerValue (error_model));
 
-  // Turn on global static routing so we can actually be routed across the network.
-  Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
+    devices.Get(1)->TraceConnectWithoutContext ("PhyRxDrop", MakeBoundCallback (&RxDrop,dropped_packets_data));
 
-  NS_LOG_INFO ("Create Applications.");
-
-  uint16_t tcp_sink_port = 4641;
-  Address sinkAddress (InetSocketAddress (interfaces.GetAddress (1), tcp_sink_port));
-  PacketSinkHelper packetSinkHelper ("ns3::TcpSocketFactory", InetSocketAddress (interfaces.GetAddress (1), tcp_sink_port));
-  ApplicationContainer tcp_sink_app_first = packetSinkHelper.Install (nodes.Get (1));
-  tcp_sink_app_first.Start (Seconds (0.0));
-  tcp_sink_app_first.Stop (Seconds (1.8));
-
-  Ptr<Socket> ns3TcpSocket1 = Socket::CreateSocket (nodes.Get (0), TcpSocketFactory::GetTypeId ()); // source at no
-
-  
-  // create TCP application at n0
-  Ptr<MyApp> tcp_ftp_agent = CreateObject<MyApp> ();
-  tcp_ftp_agent->Setup (ns3TcpSocket1, sinkAddress, 1040, 1000, DataRate ("300kbps"));
-  nodes.Get (0)->AddApplication (tcp_ftp_agent);
-  tcp_ftp_agent->SetStartTime (Seconds (0.0));
-  tcp_ftp_agent->SetStopTime (Seconds (1.8));
-
-  
-
-  //Create udp applications
-  uint16_t cbrPort = 4564;
-  double startTimes[5] = {0.2, 0.4, 0.6, 0.8, 1.0};
-  double endTimes[5]   = {1.8, 1.8, 1.2, 1.4, 1.6};
-  for(int i=0;i<5;i++){
-    uint16_t cbr_sink_port_first = cbrPort+i;
-    Address cbr_sink_address_1 (InetSocketAddress (interfaces.GetAddress (1), cbr_sink_port_first));
-    PacketSinkHelper packetSinkHelper2 ("ns3::UdpSocketFactory", InetSocketAddress (Ipv4Address::GetAny (), cbr_sink_port_first));
-    ApplicationContainer cbr_sink_app_first = packetSinkHelper2.Install (nodes.Get (1)); //n1 as sink
-    cbr_sink_app_first.Start (Seconds (0.0));
-    cbr_sink_app_first.Stop (Seconds (1.8));
-
-    Ptr<Socket> ns3UdpSocket = Socket::CreateSocket (nodes.Get (0), UdpSocketFactory::GetTypeId ()); //source at n0
-
-    // Create UDP application  at n0
-    Ptr<MyApp> first_cbr_agent = CreateObject<MyApp> ();
-    first_cbr_agent->Setup (ns3UdpSocket, cbr_sink_address_1, 1040, 100000, DataRate ("300Kbps"));
-    nodes.Get(0)->AddApplication (first_cbr_agent);
-    first_cbr_agent->SetStartTime (Seconds (startTimes[i]));
-    first_cbr_agent->SetStopTime (Seconds (endTimes[i]));  
-  }
-
-  NS_LOG_INFO ("Applications created.");
-  // Trace CongestionWindow
-  ns3TcpSocket1->TraceConnectWithoutContext ("CongestionWindow", MakeBoundCallback (&CwndChange,cwnd_data));
-  devices.Get(1)->TraceConnectWithoutContext ("PhyRxDrop", MakeBoundCallback (&RxDrop,dropped_packets_data));
-
-/*--------------Application creation ends----------------*/
-
-  //Configuring Analysis tools
-  Ptr<FlowMonitor> flowMonitor;
-  FlowMonitorHelper flowHelper;
-  flowMonitor = flowHelper.InstallAll();
-  
-  ThroughputMonitor(total_bytes_data, &flowHelper, flowMonitor); //Call ThroughputMonitor Function
+    flowMonitor = flowHelper.InstallAll();
+    ThroughputMonitor(total_bytes_data, &flowHelper, flowMonitor); //Call ThroughputMonitor Function
   
     Simulator::Stop (Seconds (1.80));
     Simulator::Run ();
-   // Get the stats from Flow Monitor
-   Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier> (flowHelper.GetClassifier ());
-    std::map<FlowId, FlowMonitor::FlowStats> stats = flowMonitor->GetFlowStats ();
-    std::cout << std::endl << "*** Flow monitor statistics ***" << std::endl;
-    std::cout << "  Tx Packets:   " << stats[1].txPackets << std::endl;
-    std::cout << "  Tx Bytes:   " << stats[1].txBytes << std::endl;
-    std::cout << "  Offered Load: " << stats[1].txBytes * 8.0 / (stats[1].timeLastTxPacket.GetSeconds () - stats[1].timeFirstTxPacket.GetSeconds ()) / 1000000 << " Mbps" << std::endl;
-    std::cout << "  Rx Packets:   " << stats[1].rxPackets << std::endl;
-    std::cout << "  Rx Bytes:   " << stats[1].rxBytes<< std::endl;
-    std::cout << "  Throughput: " << stats[1].rxBytes * 8.0 / (stats[1].timeLastRxPacket.GetSeconds () - stats[1].timeFirstRxPacket.GetSeconds ()) / 1000000 << " Mbps" << std::endl;
-    std::cout << "  Mean delay:   " << stats[1].delaySum.GetSeconds () / stats[1].rxPackets << std::endl;
-    std::cout << "  Mean jitter:   " << stats[1].jitterSum.GetSeconds () / (stats[1].rxPackets - 1) << std::endl;
-    flowMonitor->SerializeToXmlFile("data.flowmon", true, true);
-  Simulator::Destroy ();
-
-  return 0;
+    Simulator::Destroy ();
+    return 0;
 }
