@@ -28,6 +28,8 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE ("TcpComparison");
 
 AsciiTraceHelper ascii;
+Ptr<PacketSink> cbrSinks[5], tcpSink;
+int totalVal=0;
 
 class MyApp:public Application{
 public:
@@ -90,20 +92,14 @@ public:
   }
 };
 
-void ThroughputMonitor(Ptr<OutputStreamWrapper> wrapper, FlowMonitorHelper *fmhelper, Ptr<FlowMonitor> flowMon){
-  
-  Ptr<Ipv4FlowClassifier> classing = DynamicCast<Ipv4FlowClassifier> (fmhelper->GetClassifier());
-  std::map<FlowId, FlowMonitor::FlowStats> flowStats = flowMon->GetFlowStats();
-  double throughput=0;
-  for (std::map<FlowId, FlowMonitor::FlowStats>::const_iterator statistics = flowStats.begin (); statistics != flowStats.end (); ++statistics)
-  {
-    throughput += statistics->second.rxBytes;
-  }
-  
-  static double time = 0;
-  *wrapper->GetStream() << time << "\t" << ((double)throughput/1000) << '\n';
-  time += 0.05;
-  Simulator::Schedule(Seconds(0.05),&ThroughputMonitor, wrapper , fmhelper, flowMon);
+static void TotalRx(Ptr<OutputStreamWrapper> stream)
+{
+    totalVal = tcpSink->GetTotalRx();
+	for(int i=0; i<5; i++){
+        totalVal += cbrSinks[i]->GetTotalRx();
+    }
+    *stream->GetStream()<<Simulator::Now ().GetSeconds ()<<" " <<totalVal<<std::endl;
+    Simulator::Schedule(Seconds(0.05),&TotalRx, stream);
 }
 
 void CwndChange(Ptr<OutputStreamWrapper> stream, uint32_t oldCwnd, uint32_t newCwnd){
@@ -117,51 +113,57 @@ void RxDrop(Ptr<OutputStreamWrapper> stream, Ptr<const Packet> p){
 }
 
 int main (){
-    std::cout<<"Enter [1-5] to select tcp_variant:\n";
+    std::cout<<"Enter [1-5] to select tcp_congestion_control_algo:\n";
     std::cout<<"1.TCP New Reno\n";
     std::cout<<"2.TCP Hybla\n";
     std::cout<<"3.TCP Westwood\n";
     std::cout<<"4.TCP Scalable\n";
     std::cout<<"5.TCP Vegas\n";
-    std::string tcp_variant;
+    std::string tcp_congestion_control_algo;
     int option;
     std::cin>>option;
     if(option == 1){
-      tcp_variant = "TcpNewReno";
+      tcp_congestion_control_algo = "TcpNewReno";
       Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpNewReno::GetTypeId()));
     }
     else if(option == 2){
-      tcp_variant ="TcpHybla";
+      tcp_congestion_control_algo ="TcpHybla";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpHybla::GetTypeId()));
     }
     else if(option == 3){
-      tcp_variant ="TcpWestwood";
+      tcp_congestion_control_algo ="TcpWestwood";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpWestwood::GetTypeId ()));
       Config::SetDefault ("ns3::TcpWestwood::FilterType", EnumValue (TcpWestwood::TUSTIN));
     }
     else if(option == 4){
-      tcp_variant ="TcpScalable";
+      tcp_congestion_control_algo ="TcpScalable";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpScalable::GetTypeId()));
     }
     else if(option == 5){
-      tcp_variant ="TcpVegas";
+      tcp_congestion_control_algo ="TcpVegas";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpVegas::GetTypeId ()));
     }
     else{
       std::cout<<"Invalid input\nExiting.....";
       exit (0);
     }
-    std::cout<<"Selected algo: "<<tcp_variant<<"\n\n";
-    std::string congestion_window = "cwnd_"+tcp_variant+".txt";
-    std::string bytes_transferred = "bytes_"+tcp_variant+".txt";
-    std::string packets_dropped = "dropped_"+tcp_variant+".txt";
-    
+    std::cout<<"Selected algo: "<<tcp_congestion_control_algo<<"\n\n";
+    std::string congestion_window = "cwnd_"+tcp_congestion_control_algo+".txt";
+    std::string bytes_transferred = "bytes_"+tcp_congestion_control_algo+".txt";
+    std::string packets_dropped = "dropped_"+tcp_congestion_control_algo+".txt";
+
+    // Create file streams for data storage
+    Ptr<OutputStreamWrapper> cwnd_data = ascii.CreateFileStream (congestion_window);
+    Ptr<OutputStreamWrapper> total_bytes_data = ascii.CreateFileStream (bytes_transferred);
+    Ptr<OutputStreamWrapper> dropped_packets_data = ascii.CreateFileStream (packets_dropped);
+    // Ptr<OutputStreamWrapper> test = ascii.CreateFileStream("test.txt");
+
     /* Declarations */
+    NodeContainer nodes; // creating nodes
     NetDeviceContainer devices;
     InternetStackHelper internet;
     Ptr<MyApp> tcp_ftp_agent = CreateObject<MyApp> (); // creating TCP application at n0
     uint16_t tcp_sink_port = 1234; 
-    NodeContainer nodes;
     Ptr<FlowMonitor> flowMonitor;
     FlowMonitorHelper flowHelper;
     PointToPointHelper p2p;
@@ -193,7 +195,9 @@ int main (){
     tcp_ftp_agent->SetStartTime (Seconds (0.0));
     tcp_ftp_agent->SetStopTime (Seconds (1.8));
     nodes.Get (0)->AddApplication (tcp_ftp_agent);
-    
+    tcpSink = DynamicCast<PacketSink> (tcp_sink_app_first.Get (0));
+
+
     //Create udp applications
     uint16_t cbrPort = 1235;
     double start_time[5] = {0.2, 0.4, 0.6, 0.8, 1.0};
@@ -213,21 +217,22 @@ int main (){
       cbr_agent->SetStartTime (Seconds (start_time[i]));
       cbr_agent->SetStopTime (Seconds (end_time[i])); 
       nodes.Get(0)->AddApplication (cbr_agent); 
+      cbrSinks[i] = DynamicCast<PacketSink> (cbr_sink_app.Get (0));
     }
     std::cout<<"Applications created.\n";
-
-    Ptr<OutputStreamWrapper> cwnd_data = ascii.CreateFileStream (congestion_window);
-    Ptr<OutputStreamWrapper> total_bytes_data = ascii.CreateFileStream (bytes_transferred);
-    Ptr<OutputStreamWrapper> dropped_packets_data = ascii.CreateFileStream (packets_dropped);
+    // Trace CongestionWindow
     ns3TcpSocket1->TraceConnectWithoutContext ("CongestionWindow", MakeBoundCallback (&CwndChange,cwnd_data));
     
+    Simulator::Schedule(Seconds(0.05),&TotalRx, total_bytes_data);
+
     Ptr<RateErrorModel> error_model = CreateObject<RateErrorModel> ();// Creating error model
     error_model->SetAttribute ("ErrorRate", DoubleValue (0.0001));
     devices.Get (1)->SetAttribute ("ReceiveErrorModel", PointerValue (error_model));
+
     devices.Get(1)->TraceConnectWithoutContext ("PhyRxDrop", MakeBoundCallback (&RxDrop,dropped_packets_data));
 
     flowMonitor = flowHelper.InstallAll();
-    ThroughputMonitor(total_bytes_data, &flowHelper, flowMonitor); //Call ThroughputMonitor Function
+    flowMonitor->SerializeToXmlFile("data.flowmon", true, true);
   
     Simulator::Stop (Seconds (1.80));
     Simulator::Run ();
