@@ -90,18 +90,20 @@ public:
   }
 };
 
-void ThroughputMonitor(Ptr<OutputStreamWrapper> stream, FlowMonitorHelper *fmhelper, Ptr<FlowMonitor> flowMon){
-  static double time = 0;
-  double throughput=0;
-  std::map<FlowId, FlowMonitor::FlowStats> flowStats = flowMon->GetFlowStats();
+void ThroughputMonitor(Ptr<OutputStreamWrapper> wrapper, FlowMonitorHelper *fmhelper, Ptr<FlowMonitor> flowMon){
+  
   Ptr<Ipv4FlowClassifier> classing = DynamicCast<Ipv4FlowClassifier> (fmhelper->GetClassifier());
+  std::map<FlowId, FlowMonitor::FlowStats> flowStats = flowMon->GetFlowStats();
+  double throughput=0;
   for (std::map<FlowId, FlowMonitor::FlowStats>::const_iterator statistics = flowStats.begin (); statistics != flowStats.end (); ++statistics)
   {
     throughput += statistics->second.rxBytes;
   }
-  *stream->GetStream() << time << "\t" << ((double)throughput/1000) << '\n';
+  
+  static double time = 0;
+  *wrapper->GetStream() << time << "\t" << ((double)throughput/1000) << '\n';
   time += 0.05;
-  Simulator::Schedule(Seconds(0.05),&ThroughputMonitor, stream , fmhelper, flowMon);
+  Simulator::Schedule(Seconds(0.05),&ThroughputMonitor, wrapper , fmhelper, flowMon);
 }
 
 void CwndChange(Ptr<OutputStreamWrapper> stream, uint32_t oldCwnd, uint32_t newCwnd){
@@ -115,56 +117,51 @@ void RxDrop(Ptr<OutputStreamWrapper> stream, Ptr<const Packet> p){
 }
 
 int main (){
-    std::cout<<"Enter [1-5] to select tcp_congestion_control_algo:\n";
+    std::cout<<"Enter [1-5] to select tcp_variant:\n";
     std::cout<<"1.TCP New Reno\n";
     std::cout<<"2.TCP Hybla\n";
     std::cout<<"3.TCP Westwood\n";
     std::cout<<"4.TCP Scalable\n";
     std::cout<<"5.TCP Vegas\n";
-    std::string tcp_congestion_control_algo;
+    std::string tcp_variant;
     int option;
     std::cin>>option;
     if(option == 1){
-      tcp_congestion_control_algo = "TcpNewReno";
+      tcp_variant = "TcpNewReno";
       Config::SetDefault("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpNewReno::GetTypeId()));
     }
     else if(option == 2){
-      tcp_congestion_control_algo ="TcpHybla";
+      tcp_variant ="TcpHybla";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpHybla::GetTypeId()));
     }
     else if(option == 3){
-      tcp_congestion_control_algo ="TcpWestwood";
+      tcp_variant ="TcpWestwood";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpWestwood::GetTypeId ()));
       Config::SetDefault ("ns3::TcpWestwood::FilterType", EnumValue (TcpWestwood::TUSTIN));
     }
     else if(option == 4){
-      tcp_congestion_control_algo ="TcpScalable";
+      tcp_variant ="TcpScalable";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue(TcpScalable::GetTypeId()));
     }
     else if(option == 5){
-      tcp_congestion_control_algo ="TcpVegas";
+      tcp_variant ="TcpVegas";
       Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpVegas::GetTypeId ()));
     }
     else{
       std::cout<<"Invalid input\nExiting.....";
       exit (0);
     }
-    std::cout<<"Selected algo: "<<tcp_congestion_control_algo<<"\n\n";
-    std::string congestion_window = "cwnd_"+tcp_congestion_control_algo+".txt";
-    std::string bytes_transferred = "bytes_"+tcp_congestion_control_algo+".txt";
-    std::string packets_dropped = "dropped_"+tcp_congestion_control_algo+".txt";
- 
-    // Create file streams for data storage
-    Ptr<OutputStreamWrapper> cwnd_data = ascii.CreateFileStream (congestion_window);
-    Ptr<OutputStreamWrapper> total_bytes_data = ascii.CreateFileStream (bytes_transferred);
-    Ptr<OutputStreamWrapper> dropped_packets_data = ascii.CreateFileStream (packets_dropped);
+    std::cout<<"Selected algo: "<<tcp_variant<<"\n\n";
+    std::string congestion_window = "cwnd_"+tcp_variant+".txt";
+    std::string bytes_transferred = "bytes_"+tcp_variant+".txt";
+    std::string packets_dropped = "dropped_"+tcp_variant+".txt";
     
     /* Declarations */
-    NodeContainer nodes; // creating nodes
     NetDeviceContainer devices;
     InternetStackHelper internet;
     Ptr<MyApp> tcp_ftp_agent = CreateObject<MyApp> (); // creating TCP application at n0
     uint16_t tcp_sink_port = 1234; 
+    NodeContainer nodes;
     Ptr<FlowMonitor> flowMonitor;
     FlowMonitorHelper flowHelper;
     PointToPointHelper p2p;
@@ -218,13 +215,15 @@ int main (){
       nodes.Get(0)->AddApplication (cbr_agent); 
     }
     std::cout<<"Applications created.\n";
-    // Trace CongestionWindow
+
+    Ptr<OutputStreamWrapper> cwnd_data = ascii.CreateFileStream (congestion_window);
+    Ptr<OutputStreamWrapper> total_bytes_data = ascii.CreateFileStream (bytes_transferred);
+    Ptr<OutputStreamWrapper> dropped_packets_data = ascii.CreateFileStream (packets_dropped);
     ns3TcpSocket1->TraceConnectWithoutContext ("CongestionWindow", MakeBoundCallback (&CwndChange,cwnd_data));
     
     Ptr<RateErrorModel> error_model = CreateObject<RateErrorModel> ();// Creating error model
     error_model->SetAttribute ("ErrorRate", DoubleValue (0.0001));
     devices.Get (1)->SetAttribute ("ReceiveErrorModel", PointerValue (error_model));
-
     devices.Get(1)->TraceConnectWithoutContext ("PhyRxDrop", MakeBoundCallback (&RxDrop,dropped_packets_data));
 
     flowMonitor = flowHelper.InstallAll();
@@ -235,3 +234,4 @@ int main (){
     Simulator::Destroy ();
     return 0;
 }
+
